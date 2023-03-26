@@ -5,6 +5,7 @@ import Data.Char
 import qualified Data.Map.Strict as Map
 import Control.Monad.ST (ST)
 import Runner (Node (..))
+import qualified Data.Text as Text
 
 -- (<|>) :: StateT s (Either Memos) a -> StateT s (Either Memos) a -> StateT s (Either Memos) a
 -- (StateT a) <|> (StateT b) = StateT $ \s ->
@@ -21,12 +22,12 @@ addMemo memos i label result = Map.insert (i, label) result memos
 initMemos :: Memos
 initMemos = Map.empty
 
-type ParseState = (Int, Memos, String)
+type ParseState = (Int, Memos, Text.Text)
 useMemo :: String
   -> StateT ParseState (Either Memos) Node
   -> StateT ParseState (Either Memos) Node
 useMemo label p = StateT $ \(i, memos, xs) -> case findMemo memos i label of
-  Just (Just (i', node)) -> Right (node, (i', memos, drop (i' - i) xs))
+  Just (Just (i', node)) -> Right (node, (i', memos, Text.drop (i' - i) xs))
   Just Nothing -> Left memos
   Nothing -> case runStateT p (i, memos, xs) of
     Left memos -> Left (addMemo memos i label Nothing)
@@ -37,18 +38,37 @@ useMemo label p = StateT $ \(i, memos, xs) -> case findMemo memos i label of
     Left memos -> b (i, memos, xs)
     y -> y
 
+forward :: Int -> StateT ParseState (Either Memos) ()
+forward i' = do
+  (i, memos, text) <- get
+  put (i + i', memos, Text.drop i' text)
+
 string :: String -> StateT ParseState (Either Memos) String
 string s = do
   (_, memos, xs) <- get
-  unless (s `isPrefixOf` xs) $ lift $ Left memos
-  modify $ \(i, memos, xs) -> (i + length s, memos, drop (length s) xs)
+  unless (Text.pack s `Text.isPrefixOf` xs) $ lift $ Left memos
+  forward $ length s
   return s
 
-digit :: StateT ParseState (Either Memos) String
-digit = StateT digit where
-  digit (i, memos, x:xs) = if isDigit x then Right ([x], (i + 1, memos, xs)) else Left memos
-  digit (_, memos, _) = Left memos
+guardText :: StateT ParseState (Either Memos) (Char, Text.Text)
+guardText = do
+  (i, memos, text) <- get
+  when (Text.length text == 0) $ lift $ Left memos
+  return (Text.head text, Text.tail text)
 
+returnFail :: StateT ParseState (Either Memos) t
+returnFail = do
+  (_, memos, _) <- get
+  lift $ Left memos
+
+digit :: StateT ParseState (Either Memos) String
+digit = do
+  (x, _) <- guardText
+  unless (isDigit x) returnFail
+  forward 1
+  return [x]
+
+many :: StateT ParseState (Either Memos) [t] -> StateT ParseState (Either Memos) [t]
 many p = StateT inner where
   inner s = case runStateT p s of
     Right (x', s') -> case runStateT (many p) s' of
@@ -56,27 +76,37 @@ many p = StateT inner where
       Left memos -> let (i', _, xs') = s' in Right (x', (i', memos, xs'))
     Left memos -> let (i, _, xs) = s in Right ([], (i, memos, xs))
 
+oneOrMore :: StateT ParseState (Either Memos) [t] -> StateT ParseState (Either Memos) [t]
 oneOrMore p = do
   x <- p
   xs <- many p
   return $ x ++ xs
 
-anyChar = StateT inner where
-  inner (i, memos, x:xs) = Right ([x], (i + 1, memos, xs))
-  inner (_, memos, _) = Left memos
+anyChar :: StateT ParseState (Either Memos) String
+anyChar = do
+  (x, _) <- guardText
+  forward 1
+  return [x]
 
-char c = StateT inner where
-  inner (i, memos, x:xs) = if x == c then Right ([x], (i + 1, memos, xs)) else Left memos
-  inner (_, memos, _) = Left memos
+char :: Char -> StateT ParseState (Either Memos) String
+char c = do
+  (x, _) <- guardText
+  unless (x == c) returnFail
+  forward 1
+  return [x]
 
-charNot p = StateT inner where
-  inner (i, memos, x:xs) = case runStateT p (i, memos, x:xs) of
-    Left memos -> Right ([x], (i + 1, memos, xs))
-    Right (_, (_, memos, _)) -> Left memos
-  inner (_, memos, _) = Left memos
+charNot :: StateT ParseState (Either Memos) String -> StateT ParseState (Either Memos) String
+charNot p = do
+  (x, _) <- guardText
+  parseState <- get
+  case runStateT p parseState of
+    Left memos -> do
+      forward 1
+      return [x]
+    Right (_, (_, memos, _)) -> returnFail
 
 optional p = StateT $ \s -> case runStateT p s of
-  Left memos -> let (i, _, xs) = s in Right ([], (i, memos, xs))
+  Left memos -> let (i, _, text) = s in Right ([], (i, memos, text))
   Right x -> Right x
 
 sBoolean = useMemo "Boolean" (do
@@ -161,10 +191,11 @@ sFile = do
       -- char '$'
       return exps1)
 
+parse :: Text.Text -> Either Memos [Node]
 parse file = evalStateT sFile (0, initMemos, file) -- ++ "$"
 
 test = do
-  print $ runStateT sFile $ (0, initMemos, "(1 2 3)") -- (let-eval env exp)\n" ++
+  print $ runStateT sFile (0, initMemos, Text.pack "(1 2 3)") -- (let-eval env exp)\n" ++
     -- "(if (correct-syntax? 'let exp)\n" ++ 
     -- "(base-eval env (let->app exp))\n" ++ 
     -- "(eval-error env 'syntax-error exp)))"

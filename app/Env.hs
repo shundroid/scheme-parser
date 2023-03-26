@@ -30,6 +30,8 @@ makeTopEnv = result where
     defineNumber2Fn "/" $ \a b -> Number $ a `div` b
     defineNumber2Fn "<" $ \a b -> Boolean $ a < b
     defineNumber2Fn ">" $ \a b -> Boolean $ a > b
+    defineNumber2Fn "<=" $ \a b -> Boolean $ a <= b
+    defineNumber2Fn ">=" $ \a b -> Boolean $ a >= b
     defineVarM "list" $ Primitive (-1) $ PrFn $ \nodes ->
       Right $ Parens nodes
     defineVarM "cons" $ Primitive 2 $ PrFn $ \[a, b] -> case b of
@@ -44,4 +46,7 @@ makeTopEnv = result where
         _ -> Right $ Parens [y]
       Parens (x:xs) -> Right $ Parens xs
       _ -> Left $ "wrong type argument in position 1 (expecting pair): " ++ show pair
+    defineVarM "load" $ Primitive 1 $ PrFn $ \[file] -> case file of
+      String fileName -> Right $ Command $ Parens [Label "load", String fileName]
+      _ -> Left $ "wrong type argument in position 1 (expecting string): " ++ show file
     get

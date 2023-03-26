@@ -2,10 +2,29 @@ module Main where
 
 import Parser
 import Runner
-import System.IO
 import Control.Monad.State
 import Env
-import Data.IORef
+import System.Exit (exitSuccess)
+import Debug.Trace (trace)
+import qualified Data.Text.IO as TextIO
+import qualified Data.Text as Text
+
+handleParse :: Text.Text -> StateT Env IO ()
+handleParse text = do
+  env <- get
+  case parse text of
+    Left memos -> lift $ putStrLn $ "ParseError: " ++ show memos
+    Right nodes -> case eval (head nodes) env of
+      Right (Command command, _) -> case command of
+        Label "exit" -> lift exitSuccess
+        Parens [Label "load", String fileName] -> do
+          contents <- lift $ TextIO.readFile fileName
+          handleParse contents
+        _ -> lift $ putStrLn $ "Unknown command to interpreter: " ++ show command
+      Right (node, env) -> do
+        lift $ print node
+        put env
+      Left error -> lift $ putStrLn $ "RuntimeError: " ++ error
 
 scheme = let topEnv = makeTopEnv in
   runStateT repLoop topEnv where
@@ -13,22 +32,7 @@ scheme = let topEnv = makeTopEnv in
     repLoop = do
       lift $ putStr "my-scheme> "
       input <- lift getLine
-      env <- get
-      exit <- lift $ newIORef False
-      case parse input of
-        Left memos -> lift $ putStrLn $ "ParseError: " ++ show memos
-        Right node -> case eval (head node) env of
-          Right (Exit, _) -> lift $ writeIORef exit True
-          Right (node, env) -> do
-            lift $ print node
-            put env
-          Left error -> lift $ putStrLn $ "RuntimeError: " ++ error
-      doExit <- lift $ readIORef exit
-      unless doExit repLoop
+      handleParse $ Text.pack input
+      repLoop
 
-main :: IO ()
-main = do
-  handle <- openFile "test/kadais28.scm" ReadMode
-  contents <- hGetContents handle
-  print $ parse contents
-  hClose handle
+main = scheme

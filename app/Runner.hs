@@ -39,7 +39,7 @@ data Node =
   Primitive Int PrFn |
   Undefined |
   PairLast Node |
-  Exit deriving (Show)
+  Command Node deriving (Show)
 
 newtype PrFn = PrFn ([Node] -> Either String Node)
 instance Show PrFn where
@@ -52,7 +52,7 @@ baseEval exp
  | isQuote exp = let Quote node = exp in return node
  | isParens exp = case exp of
     Parens (Label label:rest) -> (case label of
-      "exit" -> return Exit
+      "exit" -> return $ Command $ Label "exit"
       "define" -> defEval exp
       "let" -> letEval exp
       "letrec" -> letrecEval exp
