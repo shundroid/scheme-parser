@@ -4,9 +4,7 @@ import Data.List
 import Data.Char
 import qualified Data.Map.Strict as Map
 import Control.Monad.ST (ST)
-import Debug.Trace (trace)
-
-data Node = Number Int | Boolean Bool | String String | Label String | Parens [Node] | Quote Node deriving (Show)
+import Runner (Node (..))
 
 -- (<|>) :: StateT s (Either Memos) a -> StateT s (Either Memos) a -> StateT s (Either Memos) a
 -- (StateT a) <|> (StateT b) = StateT $ \s ->
@@ -41,7 +39,8 @@ useMemo label p = StateT $ \(i, memos, xs) -> case findMemo memos i label of
 
 string :: String -> StateT ParseState (Either Memos) String
 string s = do
-  StateT $ \(i, memos, xs) -> if s `isPrefixOf` xs then Right ((), (i, memos, xs)) else Left memos
+  (_, memos, xs) <- get
+  unless (s `isPrefixOf` xs) $ lift $ Left memos
   modify $ \(i, memos, xs) -> (i + length s, memos, drop (length s) xs)
   return s
 
@@ -162,7 +161,7 @@ sFile = do
       -- char '$'
       return exps1)
 
-parse file = evalStateT sFile $ (0, initMemos, file) -- ++ "$"
+parse file = evalStateT sFile (0, initMemos, file) -- ++ "$"
 
 test = do
   print $ runStateT sFile $ (0, initMemos, "(1 2 3)") -- (let-eval env exp)\n" ++
