@@ -4,25 +4,56 @@ module Runner where
 
 import Control.Monad
 import Control.Monad.State.Strict
+import qualified Data.Graph as Graph
 
 -- Environments
-type Frame = [(String, Node)]
+type Frame = (Int, [(String, Node)])
 type Env = [Frame]
 
-emptyFrame :: Frame
-emptyFrame = []
-update var val frame = (var, val):frame
-lookupFrame var ((var', val'):frame') = if var == var' then Just val' else lookupFrame var frame'
-lookupFrame var _ = Nothing
+emptyFrame :: Int -> Frame
+emptyFrame next = (next, [])
+update var val (index, frameInner) = (index, (var, val):frameInner)
+-- update var val (index, frameInner) = (index, updateClosure (var, val):map updateClosure frameInner) where
+--   updateClosure (var', val') = case val' of
+--     Closure env args nodes -> (var', Closure (updateEnv env) args nodes)
+--     other -> (var', other)
+--   updateEnv (RealEnv frames) = RealEnv (updateFrames frames)
+--   updateEnv env = env
+--   updateFrames :: [Frame] -> [Frame]
+--   updateFrames ((j, frameInner'):rest)
+--     | j > index = (j, frameInner'):updateFrames rest
+--     | j == index = (j, (var, val):map updateClosure frameInner'):rest
+--     | otherwise = rest
+--   updateFrames [] = []
+lookupFrame var (_, frameInner) = inner var frameInner where
+  inner var ((var', val'):frame') = if var == var' then Just val' else inner var frame'
+  inner var _ = Nothing
+getFrameIndex (index, _) = index
+getEnvCurrent (topFrame:_) = getFrameIndex topFrame
+getEnvNext env = 1 + getEnvCurrent env
+getFrameTo index (head:tail)
+  | getFrameIndex head > index = getFrameTo index tail
+  | getFrameIndex head == index = head:tail
+  | otherwise = []
+getFrameTo _ _ = []
 
-makeEnv :: Env
-makeEnv = [emptyFrame]
-extendEnv env = emptyFrame:env
+type ID = Env
+modifyEnv :: (Env -> Env) -> StateT ID (Either String) ()
+modifyEnv = modify
+
+makeID :: ID
+makeID = [emptyFrame 0]
+extendEnv :: ID -> ID
+extendEnv env = emptyFrame (getEnvNext env):env
 defineVar :: String -> Node -> Env -> Env
 defineVar var val (frame:rest) = update var val frame : rest
 defineVarM var val = StateT $ \env -> Right ((), defineVar var val env)
 bulkDefineVars (var:vars) (val:vals) env = bulkDefineVars vars vals $ defineVar var val env
 bulkDefineVars _ _ env = env
+-- defineVarM :: String -> Node -> StateT ID (Either String) ()
+-- defineVarM var val = StateT $ \(RealEnv (head:tail)) -> Right ((), RealEnv (update var val head:tail))
+
+lookupEnv :: String -> Env -> Maybe Node
 lookupEnv var (frame:rest) = case lookupFrame var frame of
   Just val' -> Just val'
   Nothing -> lookupEnv var rest
@@ -35,7 +66,7 @@ data Node =
   Label String |
   Parens [Node] |
   Quote Node |
-  Closure Env [String] [Node] |
+  Closure Int [String] [Node] |
   Primitive Int PrFn |
   Undefined |
   PairLast Node |
@@ -45,9 +76,9 @@ newtype PrFn = PrFn ([Node] -> Either String Node)
 instance Show PrFn where
   show _ = "PrFn"
 
-baseEval :: Node -> StateT Env (Either String) Node
+baseEval :: Node -> StateT ID (Either String) Node
 baseEval exp
- | isConstant exp = StateT $ \env -> Right (exp, env)
+ | isConstant exp = StateT $ \id -> Right (exp, id)
  | isLabel exp = varEval exp
  | isQuote exp = let Quote node = exp in return node
  | isParens exp = case exp of
@@ -85,9 +116,9 @@ isLabel _ = False
 isParens (Parens _) = True
 isParens _ = False
 
-returnError name exp = StateT $ \s -> Left $ "SyntaxError: Invalid " ++ name ++ ": " ++ show exp
+returnError name exp = StateT $ \_ -> Left $ "SyntaxError: Invalid " ++ name ++ ": " ++ show exp
 
-letEval :: Node -> StateT Env (Either String) Node
+letEval :: Node -> StateT ID (Either String) Node
 letEval exp = case exp of
   Parens (_:Parens defs:body) -> do
     defNames <- forM defs $ \case
@@ -99,55 +130,57 @@ letEval exp = case exp of
     appEval $ Parens (Parens ([Label "lambda", Parens defNames] ++ body):defValues)
   _ -> returnError "let" exp
 
-defEval :: Node -> StateT Env (Either String) Node
+defEval :: Node -> StateT ID (Either String) Node
 defEval exp = case exp of
-  Parens [_, var, body] -> case var of
+  Parens (_:var:body) -> case var of
     Label label -> do
-      val <- baseEval body
-      modify (defineVar label val)
+      val <- baseEval $ Parens (Label "begin":body)
+      defineVarM label val
       return val
     Parens ((Label fnName):args) -> do
-      defEval $ Parens [Label "define", Label fnName, Parens [Label "lambda", Parens args, body]]
-    _ -> returnError "eval" exp
-  _ -> returnError "eval" exp
+      defEval $ Parens [Label "define", Label fnName, Parens (Label "lambda":Parens args:body)]
+    _ -> returnError "define" exp
+  _ -> returnError "define" exp
 
-varEval :: Node -> StateT Env (Either String) Node
+varEval :: Node -> StateT ID (Either String) Node
 varEval exp = case exp of
   Label label -> StateT $ \env -> case lookupEnv label env of
     Just val -> Right (val, env)
     Nothing -> Left $ "ReferenceError: " ++ label ++ " is undefined."
   _ -> returnError "var" exp
 
-lambdaEval :: Node -> StateT Env (Either String) Node
+lambdaEval :: Node -> StateT ID (Either String) Node
 lambdaEval exp = case exp of
   Parens (_:Parens args:body) -> do
     names <- forM args $ \case
       Label name -> lift $ Right name
       _ -> lift $ Left $ "SyntaxError: invalid lambda" ++ show exp
     env <- get
-    return $ Closure env names body
+    return $ Closure (getEnvCurrent env) names body
   _ -> returnError "lambda" exp
 
-beginEval :: Node -> StateT Env (Either String) Node
+beginEval :: Node -> StateT ID (Either String) Node
 beginEval exp = case exp of
   Parens (_:body) -> do
     evaled <- forM body baseEval
     return $ last evaled
   _ -> returnError "begin" exp
 
-appEval :: Node -> StateT Env (Either String) Node
+appEval :: Node -> StateT ID (Either String) Node
 appEval exp = case exp of
   Parens (fn:args) -> do -- args may be []
     evaledFn <- baseEval fn
     evaledArgs <- forM args baseEval
     baseApply evaledFn evaledArgs
 
+baseApply :: Node -> [Node] -> StateT ID (Either String) Node
 baseApply fun argVals = case fun of
-  Closure env' argVars nodes -> if length argVals /= length argVars then
+  Closure envIndex argVars nodes -> if length argVals /= length argVars then
     returnError "baseApply" (fun, argVals) else
     StateT $ \env -> let
       exp = Parens (Label "begin":nodes)
-      runEnv = bulkDefineVars argVars argVals $ extendEnv env'
+      preRunEnv = extendEnv $ getFrameTo envIndex env
+      runEnv = bulkDefineVars argVars argVals preRunEnv
       result = runStateT (beginEval exp) runEnv in
         case result of
           Right (node, _) -> Right (node, env)

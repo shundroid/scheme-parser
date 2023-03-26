@@ -4,6 +4,13 @@ module Env where
 import Runner
 import Control.Monad.State.Strict
 
+checkNumber1Fn nodes = case nodes of
+  [Number i] -> Right i
+  _ -> Left "wrong type argument: position 1"
+defineNumber1Fn operator fn =
+  defineVarM operator $ Primitive 1 $ PrFn $ \nodes -> case checkNumber1Fn nodes of
+    Right i -> Right $ fn i
+    Left error -> Left error
 checkNumber2Fn nodes = case nodes of
   [Number i, Number j] -> Right (i, j)
   [_, Number _] -> Left "wrong type argument: position 1"
@@ -13,10 +20,17 @@ defineNumber2Fn operator fn =
   defineVarM operator $ Primitive 2 $ PrFn $ \nodes -> case checkNumber2Fn nodes of
     Right (i, j) -> Right $ fn i j
     Left error -> Left error
+defineNumberInfFn operator min fn =
+  defineVarM operator $ Primitive (-1) $ PrFn $ \nodes -> do
+    unless (length nodes >= min) $ Left "wrong number of arguments"
+    nums <- forM nodes $ \case
+      Number i -> return i
+      _ -> Left "wrong type argument"
+    return $ fn nums
 
 makeTopEnv :: Env
 makeTopEnv = result where
-  Right result = evalStateT state makeEnv
+  Right result = evalStateT state makeID
   state :: StateT Env (Either String) Env
   state = do
     defineVarM "=" $ Primitive 2 $ PrFn $ \case
@@ -24,14 +38,17 @@ makeTopEnv = result where
       [String i, String j] -> Right $ Boolean (i == j)
       [Boolean i, Boolean j] -> Right $ Boolean (i == j)
       _ -> Left "uncomparable two"
-    defineNumber2Fn "+" $ \a b -> Number $ a + b
-    defineNumber2Fn "*" $ \a b -> Number $ a * b
-    defineNumber2Fn "-" $ \a b -> Number $ a - b
-    defineNumber2Fn "/" $ \a b -> Number $ a `div` b
+    defineNumberInfFn "+" 0 $ \nums -> Number $ sum nums
+    defineNumberInfFn "*" 0 $ \nums -> Number $ product nums
+    defineNumberInfFn "-" 1 $ \(head:tail) -> Number $ foldl (-) head tail
+    defineNumberInfFn "/" 1 $ \(head:tail) -> Number $ foldl div head tail
     defineNumber2Fn "<" $ \a b -> Boolean $ a < b
     defineNumber2Fn ">" $ \a b -> Boolean $ a > b
     defineNumber2Fn "<=" $ \a b -> Boolean $ a <= b
     defineNumber2Fn ">=" $ \a b -> Boolean $ a >= b
+    defineNumber2Fn "modulo" $ \a b -> Number $ a `mod` b
+    defineNumber1Fn "even?" $ \a -> Boolean $ even a
+    defineNumber1Fn "odd?" $ \a -> Boolean $ odd a
     defineVarM "list" $ Primitive (-1) $ PrFn $ \nodes ->
       Right $ Parens nodes
     defineVarM "cons" $ Primitive 2 $ PrFn $ \[a, b] -> case b of
